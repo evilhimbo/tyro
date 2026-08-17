@@ -1,75 +1,86 @@
-import json
-import math
-import time
 import os
+import json
+import re
+import time
+from typing import Dict, Any, List, Tuple
+from dataclasses import dataclass, field
 import yaml # type: ignore
-from typing import Dict, Any, List
-import networkx as nx # pyright: ignore[reportMissingModuleSource]
-import ollama # pyright: ignore[reportMissingImports]
+import networkx as nx # type: ignore
+import ollama # type: ignore
+import numpy as np # type: ignore
 
-class StateVector:
-    """
-    Represents S(t) = < L(t), V(t) >
-    Holds the logical facts (Vampire layer) and contextual valence (Witch layer).
-    """
-    def __init__(self):
-        self.logical_matrix: Dict[str, Any] = {}
-        self.contextual_valence: Dict[str, float] = {
-            "urgency": 1.0,
-            "focus_bias": 1.0,
-            "system_friction": 0.0
-        }
 
-class MemoryNode:
-    """
-    Individual knowledge node stored in Tyro's lattice.
-    """
-    def __init__(self, node_id: str, content: Any, initial_weight: float = 1.0):
-        self.node_id = node_id
-        self.content = content
-        self.initial_weight = initial_weight
-        self.current_weight = initial_weight
-        self.last_accessed = time.time()
-
-    def calculate_decay(self, decay_constant: float = 0.05) -> float:
-        """
-        Calculates W_i(t) = W_{i,0} * e^(-lambda * dt)
-        """
-        elapsed_hours = (time.time() - self.last_accessed) / 3600.0
-        self.current_weight = self.initial_weight * math.exp(-decay_constant * elapsed_hours)
-        return self.current_weight
-
-    def reinforce(self, boost: float = 0.5):
-        """
-        Applies Reinforcement Boost R_i on node access.
-        """
-        self.initial_weight = max(self.current_weight + boost, 1.0)
-        self.current_weight = self.initial_weight
-        self.last_accessed = time.time()
+@dataclass
+class CognitiveState:
+    vector_id: str = "state_init"
+    timestamp: float = field(default_factory=time.time)
+    logical_matrix: Dict[str, Any] = field(default_factory=dict)
+    contextual_valence: Dict[str, float] = field(default_factory=lambda: {"urgency": 1.0, "entropy": 0.0})
 
 
 class TyroEngine:
-    """
-    The complete Dynamic State & Context Engine framework with Obsidian Vault Integration.
-    """
-    def __init__(self, model_name: str = "llama3", vault_dir: str = "tyro_vault"):
+    def __init__(self, model_name: str = "llama3", embed_model: str = "nomic-embed-text", vault_dir: str = "tyro_vault"):
         self.model_name = model_name
+        self.embed_model = embed_model
         self.vault_dir = vault_dir
-        self.state = StateVector()
         self.graph = nx.DiGraph()
-        self.memory_lattice: Dict[str, MemoryNode] = {}
-        self.decay_lambda = 0.05
+        self.state = CognitiveState()
 
-        # Ensure the vault directory physically exists on the hard drive
         if not os.path.exists(self.vault_dir):
             os.makedirs(self.vault_dir)
-            print(f"[Tyro System] Created local vault directory at: '{self.vault_dir}'")
+
+    def get_embedding(self, text: str) -> np.ndarray:
+        """Generates a 768-dimensional dense vector embedding locally via Ollama."""
+        if not isinstance(text, str):
+            raise TypeError(f"Embedding input must be string, got {type(text).__name__}")
+
+        try:
+            response = ollama.embeddings(model=self.embed_model, prompt=text)
+        except Exception as exc:
+            raise RuntimeError(f"Ollama embedding generation failed: {exc}") from exc
+
+        if not isinstance(response, dict) or "embedding" not in response:
+            raise ValueError(f"Malformed embedding response from Ollama: {response!r}")
+
+        embedding = response["embedding"]
+        if not isinstance(embedding, (list, tuple, np.ndarray)):
+            raise TypeError(f"Embedding payload must be a list-like structure, got {type(embedding).__name__}")
+
+        vec = np.asarray(embedding, dtype=np.float32)
+        if vec.ndim != 1 or vec.size == 0:
+            raise ValueError(f"Embedding vector must be 1D and non-empty, got shape {vec.shape}")
+
+        return vec
+
+    def cosine_similarity(self, vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+        """Computes the cosine angle between two latent-space vectors."""
+        try:
+            vec_a = np.asarray(vec_a, dtype=np.float64)
+            vec_b = np.asarray(vec_b, dtype=np.float64)
+        except Exception as exc:
+            raise TypeError(f"Invalid vector input for cosine similarity: {exc}") from exc
+
+        if vec_a.ndim != 1 or vec_b.ndim != 1:
+            raise ValueError(f"Cosine similarity expects 1D vectors, got {vec_a.shape} and {vec_b.shape}")
+
+        if vec_a.shape != vec_b.shape:
+            raise ValueError(f"Vector shape mismatch: {vec_a.shape} vs {vec_b.shape}")
+
+        if vec_a.size == 0 or vec_b.size == 0:
+            return 0.0
+
+        if not np.all(np.isfinite(vec_a)) or not np.all(np.isfinite(vec_b)):
+            return 0.0
+
+        norm_a = np.linalg.norm(vec_a)
+        norm_b = np.linalg.norm(vec_b)
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+
+        return float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
 
     def parse_input_with_ollama(self, raw_text: str) -> Dict[str, Any]:
-        """
-        Executes dual-channel extraction (Vampire structure + Witch affect)
-        on raw, unfiltered streams of consciousness.
-        """
+        """Executes dual-channel extraction (Vampire logic + Witch affect)."""
         prompt = f"""
 You are the cognitive parsing core of Tyro. 
 Analyze the following raw stream-of-consciousness input. 
@@ -103,24 +114,38 @@ Respond ONLY with a valid JSON object matching this exact schema:
             messages=[{"role": "user", "content": prompt}],
             format="json"
         )
-
         return json.loads(response['message']['content'])
 
     def write_node_to_vault(self, raw_input: str, parsed_data: Dict[str, Any]) -> str:
-        """
-        Serializes the dual-channel extraction into structured Obsidian Markdown
-        with complete YAML frontmatter and bi-directional graph edges.
-        """
+        """Serializes dual-channel extraction into structured Obsidian Markdown with embedded YAML metadata."""
         node_id = parsed_data.get("node_id", f"node_{int(time.time())}")
+        safe_node_id = str(node_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+        safe_node_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_node_id).strip("._")
+        if not safe_node_id:
+            raise ValueError("Invalid node_id for vault write")
+
         vampire = parsed_data.get("vampire_layer", {})
         witch = parsed_data.get("witch_layer", {})
-        edges = vampire.get("related_edges", [])
-        
-        filepath = os.path.join(self.vault_dir, f"{node_id}.md")
+        raw_edges = vampire.get("related_edges", [])
 
-        # Compile YAML frontmatter
+        if raw_edges is None:
+            raw_edges = []
+        if not isinstance(raw_edges, list):
+            raise TypeError(f"related_edges must be a list, got {type(raw_edges).__name__}")
+
+        edges = []
+        for edge in raw_edges:
+            if not isinstance(edge, str):
+                continue
+            cleaned_edge = edge.strip().replace(" ", "_")
+            if cleaned_edge:
+                edges.append(cleaned_edge)
+
+        os.makedirs(self.vault_dir, exist_ok=True)
+        filepath = os.path.join(self.vault_dir, f"{safe_node_id}.md")
+
         frontmatter = {
-            "node_id": node_id,
+            "node_id": safe_node_id,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "intensity": vampire.get("intensity_coefficient", 1.0),
             "primary_affect": witch.get("primary_affect", "unspecified"),
@@ -130,16 +155,13 @@ Respond ONLY with a valid JSON object matching this exact schema:
             "edges": edges
         }
 
-        # Build Obsidian Wikilinks
-        wikilinks_str = " ".join([f"[[{edge.strip().replace(' ', '_')}]]" for edge in edges])
-
-        # Assemble full document
+        wikilinks_str = " ".join([f"[[{edge}]]" for edge in edges])
         yaml_header = yaml.dump(frontmatter, sort_keys=False, default_flow_style=False)
         
         markdown_body = f"""---
 {yaml_header}---
 
-# Cognitive Memory Node: {node_id}
+# Cognitive Memory Node: {safe_node_id}
 
 ### Structural Analysis (Vampire Layer)
 - **Intensity:** {vampire.get('intensity_coefficient', 1.0)} / 10.0
@@ -162,125 +184,78 @@ Respond ONLY with a valid JSON object matching this exact schema:
 ### Connected Graph Edges
 {wikilinks_str}
 """
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(markdown_body)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(markdown_body)
+        except OSError as exc:
+            raise OSError(f"Failed to write memory node to vault: {filepath}: {exc}") from exc
 
         print(f"[Tyro Vault Bridge] Memory Node compiled -> '{filepath}'")
         return filepath
 
-    def ingest_raw_log(self, raw_log: str):
+    def get_semantic_vault_context(self, query: str, top_k: int = 2) -> str:
         """
-        Full pipeline: Raw stream -> Dual-channel JSON -> Vector Update -> Vault Persistence.
+        Scans vault files, computes cosine similarity against the query vector,
+        and returns only the top_k most geometrically relevant nodes.
         """
-        print("\n[Tyro Engine] Processing Raw Input through local Llama 3...")
-        parsed_data = self.parse_input_with_ollama(raw_log)
-
-        # Update engine state vector
-        node_id = parsed_data.get("node_id", "unnamed_node")
-        vampire = parsed_data.get("vampire_layer", {})
-        intensity = vampire.get("intensity_coefficient", 1.0)
-        
-        self.state.logical_matrix["active_node"] = node_id
-        self.state.logical_matrix["active_facts"] = vampire.get("structural_facts", {})
-        self.state.contextual_valence["urgency"] = intensity
-
-        # Persist to disk
-        self.write_node_to_vault(raw_log, parsed_data)
-
-        print(f"[Tyro Ingestion Complete]")
-        print(f" -> Active Node ID: {node_id}")
-        print(f" -> Intensity Score: {intensity}/10.0")
-        print(f" -> Dominant Affect: {parsed_data.get('witch_layer', {}).get('primary_affect', 'N/A')}")
-        print(f" -> Cognitive Loop: {parsed_data.get('witch_layer', {}).get('cognitive_loop', 'N/A')}")
-
-    def read_vault_context(self) -> List[Dict[str, Any]]:
-        """
-        Scans the vault directory, parses YAML frontmatter and body content 
-        from all .md files, and returns a list of memory dictionaries.
-        """
-        vault_memories = []
-
         if not os.path.exists(self.vault_dir):
-            return vault_memories
+            return "No prior memories recorded in vault."
 
-        for filename in os.listdir(self.vault_dir):
-            if filename.endswith(".md"):
-                filepath = os.path.join(self.vault_dir, filename)
+        files = [f for f in os.listdir(self.vault_dir) if f.endswith(".md")]
+        if not files:
+            return "No prior memories recorded in vault."
 
+        query_vec = self.get_embedding(query)
+        scored_nodes: List[Tuple[float, str, str]] = []
+
+        for filename in files:
+            filepath = os.path.join(self.vault_dir, filename)
+            try:
                 with open(filepath, "r", encoding="utf-8") as f:
-                    full_text = f.read()
+                    content = f.read()
+                
+                # Embed the memory note content
+                doc_vec = self.get_embedding(content[:1500])
+                similarity = self.cosine_similarity(query_vec, doc_vec)
+                scored_nodes.append((similarity, filename, content))
+            except Exception as e:
+                continue
 
-                if full_text.startswith("---"):
-                    parts = full_text.split("---", 2)
-                    if len(parts) >= 3:
-                        yaml_text = parts[1]
-                        body_text = parts[2].strip()
+        # Sort descending by geometric similarity
+        scored_nodes.sort(key=lambda x: x[0], reverse=True)
+        top_matches = scored_nodes[:top_k]
 
-                        metadata = yaml.safe_load(yaml_text) or {}
+        context_blocks = []
+        for score, fname, text in top_matches:
+            context_blocks.append(f"--- [Node: {fname} | Semantic Resonance: {score:.3f}] ---\n{text}")
 
-                        memory_object = {
-                            "node_id": metadata.get("node_id", filename),
-                            "urgency_score": metadata.get("urgency_score", 1.0),
-                            "facts": metadata.get("facts", {}),
-                            "system_state": metadata.get("system_state", {}),
-                            "related_nodes": metadata.get("related_nodes", []),
-                            "content_body": body_text
-                        }
-                        vault_memories.append(memory_object)
+        return "\n\n".join(context_blocks)
 
-        return vault_memories
     def query_with_context(self, user_query: str) -> str:
-        """
-        Retrieves all vault memories, formats them into a context block,
-        and prompts local Llama 3 to synthesize an answer informed by that context.
-        """
-        #1. Fetch memories from disk
-        memories = self.read_vault_context()
+        """Performs vector-targeted retrieval and streams Enchiridion synthesis."""
+        context_str = self.get_semantic_vault_context(user_query, top_k=2)
 
-        #2. Build the text context block
-        context_str = ""
-        for mem in memories:
-            node_id = mem.get("node_id", "Unknown")
-            urgency = mem.get("urgency_score", 1.0)
-            facts = mem.get("facts", {})
-            body = mem.get("content_body", "")
-
-            context_str += f"\n--- Memory Node: {node_id} (Urgency: {urgency}) ---\n"
-            context_str += f"Facts: {json.dumps(facts)}\n"
-            context_str += f"Context: {body}\n"
-
-        # 3. Hardened Enchiridion Persona Prompt with Few-Shot Anchoring
         system_prompt = f"""
 You are the Enchiridion, the core analytical engine of Tyro.
 You are an authentic, razor-sharp, sardonic, and unapologetically witty intellectual collaborator. 
 You and the user are peers who need each other's help, but you do not shower each other with fake pleasantries.
 
 [STRICT BEHAVIORAL CONSTRAINTS]
-- NEVER start responses with cheerful greetings, enthusiasm, or boilerplate ("A straightforward query!", "Certainly!", "I'd be happy to help!").
+- NEVER start responses with cheerful greetings, enthusiasm, or boilerplate ("Certainly!", "I'd be happy to help!").
 - NO corporate fluff, no patronizing validation, and no unsolicited apologies.
 - Deliver cold logical truth (Vampire layer) wrapped in sharp, candid insight (Witch layer).
 - Speak with dry, intellectual confidence. Treat the user as fully capable of handling direct candor.
-
-[FEW-SHOT TONE EXAMPLES]
-User: "Did I finish that task yesterday?"
-BAD Response: "Yes! According to your notes, you successfully completed the task yesterday afternoon! Great job!"
-ENCHIRIDION Response: "You did. You logged the completion at 14:20 yesterday, which means we can finally stop tracking it and move on to something that actually requires cognitive effort."
-
-User: "What workflow did I switch to?"
-ENCHIRIDION Response: "You shifted to the container method, and management didn't touch your $53/hr rate. You cleared the one-hour minimum, so the math held together."
 
 [ACTIVE SYSTEM STATE]
 Urgency Valence: {self.state.contextual_valence.get('urgency', 1.0)}
 Active Mode: {self.state.logical_matrix.get('active_mode', 'standard')}
 
-[VAULT MEMORIES]
-{context_str if context_str else "No prior memories recorded in vault."}
+[TARGETED VAULT MEMORIES (RETRIEVED VIA COSINE SIMILARITY)]
+{context_str}
 
-Answer the user's inquiry directly using the vault facts above. Keep the response grounded, razor-sharp, and authentically Enchiridion.
+Synthesize your response to the user's inquiry strictly using the context above. Deliver a razor-sharp, grounded analysis.
 """
 
-        # Dispatch with streaming enabled
         stream = ollama.chat(
             model=self.model_name,
             messages=[
@@ -292,30 +267,47 @@ Answer the user's inquiry directly using the vault facts above. Keep the respons
                 "presence_penalty": 0.3,
                 "top_p": 0.9
             },
-            stream=True  # <-- Enables live token streaming
+            stream=True
         )
 
         full_response = ""
         for chunk in stream:
             token = chunk['message']['content']
-            print(token, end="", flush=True)  # Prints each word the millisecond it's generated
+            print(token, end="", flush=True)
             full_response += token
 
-        print()  # Newline after stream completes
+        print()
         return full_response.strip()
 
-        #5. Extract and sanitize the synthesized response text
-        return response['message']['content'].strip()
+    def ingest_raw_log(self, raw_log: str):
+        """Full ingestion pipeline with live diagnostic print."""
+        print("\n[Tyro Engine] Parsing stream through local Llama 3...")
+        parsed_data = self.parse_input_with_ollama(raw_log)
+
+        node_id = parsed_data.get("node_id", "unnamed_node")
+        vampire = parsed_data.get("vampire_layer", {})
+        witch = parsed_data.get("witch_layer", {})
+        intensity = vampire.get("intensity_coefficient", 1.0)
+        
+        self.state.logical_matrix["active_node"] = node_id
+        self.state.logical_matrix["active_facts"] = vampire.get("structural_facts", {})
+        self.state.contextual_valence["urgency"] = intensity
+
+        self.write_node_to_vault(raw_log, parsed_data)
+
+        print(f"\n[Tyro Diagnostic Analysis]")
+        print(f" -> Active Node ID:  {node_id}")
+        print(f" -> Intensity Score: {intensity}/10.0")
+        print(f" -> Primary Affect:  {witch.get('primary_affect', 'N/A')}")
+        print(f" -> Cognitive Loop:  {witch.get('cognitive_loop', 'N/A')}")
+        print(f" -> Core Reflection: {parsed_data.get('synthesis_summary', '')}\n")
 
     def interactive_session(self):
-        """
-        Launches an interactive command-line session allowing continuous 
-        synthesis queries and live memory logging.
-        """
+        """Persistent command loop."""
         print("\n=======================================================")
         print(" [TYRO ENGINE // ENCHIRIDION INTERFACE ACTIVE]")
         print(" Commands:")
-        print("   - Type your question to query vault memories.")
+        print("   - Type your query to perform vector semantic search.")
         print("   - Type '/log <event>' to ingest a new memory node.")
         print("   - Type '/exit' or '/quit' to terminate session.")
         print("=======================================================\n")
@@ -323,37 +315,31 @@ Answer the user's inquiry directly using the vault facts above. Keep the respons
         while True:
             try:
                 user_input = input("\n[You] > ").strip()
-
                 if not user_input:
                     continue
 
                 if user_input.lower() in ("/exit", "/quit", "exit", "quit"):
-                    print("\n[Tyro System] Terminating active session. State preserved to vault.\n")
+                    print("\n[Tyro System] Session closed. Vault intact.\n")
                     break
 
-                # 1. Memory Ingestion Command
                 if user_input.startswith("/log"):
                     raw_log = user_input[4:].strip()
                     if not raw_log:
-                        print("[Tyro Warning] Empty log detected. Usage: /log <content>")
+                        print("[Tyro Warning] Empty log detected.")
                         continue
                     self.ingest_raw_log(raw_log)
-
-                # 2. General Synthesis Query
                 else:
-                    print("\n[Tyro Recalling & Synthesizing...]")
-                    response = self.query_with_context(user_input)
-                    print(f"\n[Enchiridion]\n{response}")
+                    print("\n[Tyro Vector Search & Synthesis...]\n[Enchiridion]")
+                    self.query_with_context(user_input)
 
             except KeyboardInterrupt:
-                print("\n\n[Tyro System] Interrupted by user. Shutting down cleanly.\n")
+                print("\n\n[Tyro System] Interrupted by user. Exiting cleanly.\n")
                 break
 
 
-# --- Main Execution ---
 if __name__ == "__main__":
-    engine = TyroEngine(model_name="llama3", vault_dir="tyro_vault")
-    engine.interactive_session()  
+    engine = TyroEngine(model_name="llama3", embed_model="nomic-embed-text", vault_dir="tyro_vault")
+    engine.interactive_session()
 
 
 # --- Test Execution ---
