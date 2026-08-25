@@ -120,6 +120,15 @@ class InputParser:
             raise ValueError(f"{field_name} cannot be empty")
         return stripped
 
+    @classmethod
+    def validate_optional_string_field(
+        cls, value: str, field_name: str, default: str = "??"
+    ) -> str:
+        """Return a default for blank optional fields; validate supplied values."""
+        if not value.strip():
+            return default
+        return cls.validate_string_field(value, field_name)
+
     @staticmethod
     def parse_facts(facts_str: str) -> Dict[str, str]:
         """Parse 'key1=val1; key2=val2' into a dict."""
@@ -187,9 +196,9 @@ class InputParser:
             "trigger": cls.validate_string_field(parsed["trigger"], "trigger"),
             "affect": cls.validate_string_field(parsed["affect"], "affect"),
             # Optional fields: use .get() with fallback to empty string, then default to "??" if empty
-            "loop": cls.validate_string_field(parsed.get("loop", ""), "loop") or "??",
-            "need": cls.validate_string_field(parsed.get("need", ""), "need") or "??",
-            "tension": cls.validate_string_field(parsed.get("tension", ""), "tension") or "??",
+            "loop": cls.validate_optional_string_field(parsed.get("loop", ""), "loop"),
+            "need": cls.validate_optional_string_field(parsed.get("need", ""), "need"),
+            "tension": cls.validate_optional_string_field(parsed.get("tension", ""), "tension"),
             "facts": cls.parse_facts(parsed.get("facts", "")),
             "edges": cls.parse_edges(parsed.get("edges", "")),
             "summary": parsed.get("summary", "").strip(),
