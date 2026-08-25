@@ -1,0 +1,14 @@
+# Python virtual environment
+.venv/
+
+# Python generated files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code local settings
+.vscode/
+
+# Obsidian local workspace settings
+.obsidian/

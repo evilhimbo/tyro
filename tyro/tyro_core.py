@@ -208,7 +208,7 @@ class VaultBridge:
     Responsible for path sanitization, YAML serialization, and markdown writing.
     """
 
-    def __init__(self, vault_dir: str = "tyro_vault"):
+    def __init__(self, vault_dir: str = "tyro_vault") -> None:
         self.vault_dir = vault_dir
         os.makedirs(self.vault_dir, exist_ok=True)
 
@@ -378,7 +378,7 @@ class TyroEngine:
     Manages user input, parsing, validation, and vault persistence.
     """
 
-    def __init__(self, vault_dir: str = "tyro_vault"):
+    def __init__(self, vault_dir: str = "tyro_vault") -> None:
         self.vault_bridge = VaultBridge(vault_dir)
         self.state = CognitiveState()
         self.parser = InputParser()
@@ -426,16 +426,17 @@ class TyroEngine:
 
         # Update state
         self.state.active_node = entry.node_id
-    try:
-        self.state.vault_node_count = len(
-            [f for f in os.listdir(self.vault_bridge.vault_dir) if f.endswith(".md")]
-        )
-    except FileNotFoundError:
-        self.state.vault_node_count = 0
-        print("[Warning] Vault directory missing: node count reset to 0", file=sys.stderr)
+        try:
+            self.state.vault_node_count = len(
+                [f for f in os.listdir(self.vault_bridge.vault_dir) if f.endswith(".md")]
+            )
+        except FileNotFoundError:
+            self.state.vault_node_count = 0
+            print("[Warning] Vault directory missing: node count reset to 0", file=sys.stderr)
+
         return entry
 
-    def print_ingestion_result(self, entry: LogEntry):
+    def print_ingestion_result(self, entry: LogEntry) -> None:
         """Pretty-print the result of a successful ingestion."""
         v = entry.vampire_layer
         w = entry.witch_layer
@@ -457,7 +458,7 @@ class TyroEngine:
             print(f"Related Edges:    {', '.join(v.related_edges)}")
         print("=" * 70 + "\n")
 
-    def print_vault_status(self):
+    def print_vault_status(self) -> None:
         """Print vault statistics."""
         stats = self.vault_bridge.read_vault_stats()
 
@@ -470,7 +471,7 @@ class TyroEngine:
         print(f"Intensity Avg:    {stats['intensity_avg']}")
         print("=" * 70 + "\n")
 
-    def interactive_session(self):
+    def interactive_session(self) -> None:
         """Main REPL loop for user interaction."""
         print("\n" + "=" * 70)
         print("[TYRO ENGINE — PHASE 1: INGESTION & VECTOR BEDROCK]")
