@@ -12,3 +12,8 @@ __pycache__/
 
 # Obsidian local workspace settings
 .obsidian/
+
+# Local Tyro vault memory and instructions
+tyro/tyro_vault/*.md
+!tyro/tyro_vault/CANONICAL_SCHEMA_SPEC.md
+tyro/tyro_vault/.obsidian/
