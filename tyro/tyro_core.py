@@ -218,7 +218,7 @@ class VaultBridge:
     """
 
     def __init__(self, vault_dir: str = "tyro_vault") -> None:
-        self.vault_dir = vault_dir
+        self.vault_dir = os.path.join(vault_dir, "nodes")
         os.makedirs(self.vault_dir, exist_ok=True)
 
     @staticmethod
